@@ -3,22 +3,19 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision'
-import { createClient } from '@/utils/supabase/client' // 引入 Supabase
+import { createClient } from '@/utils/supabase/client'
 
 export default function AIBodyMeasure() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [poseLandmarker, setPoseLandmarker] = useState<any>(null)
-  
-  // 数据状态
-  const [userHeight, setUserHeight] = useState<string>('') // 用户输入身高
-  const [shoulderWidthCm, setShoulderWidthCm] = useState<number>(0) // 算出来的肩宽
+  const [userHeight, setUserHeight] = useState<string>('')
+  const [shoulderWidthCm, setShoulderWidthCm] = useState<number>(0)
   const [cameraActive, setCameraActive] = useState(false)
-  const [isSaving, setIsSaving] = useState(false) // 保存中的状态
+  const [isSaving, setIsSaving] = useState(false)
 
   const supabase = createClient()
 
-  // 1. 加载 AI 模型 (和之前一样)
   useEffect(() => {
     async function loadModel() {
       const vision = await FilesetResolver.forVisionTasks(
@@ -37,13 +34,20 @@ export default function AIBodyMeasure() {
     loadModel()
   }, [])
 
-  // 2. 启动摄像头
   const startCamera = async () => {
     if (!userHeight) {
       alert("Please enter your height first! (请先输入身高)")
       return
     }
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } })
+    // 强制请求 1280x720，但手机可能会忽略，所以下面我们要动态调整
+    const stream = await navigator.mediaDevices.getUserMedia({ 
+      video: { 
+        width: { ideal: 1280 }, 
+        height: { ideal: 720 },
+        facingMode: "user" // 强制使用前置摄像头
+      } 
+    })
+    
     if (videoRef.current) {
       videoRef.current.srcObject = stream
       videoRef.current.onloadedmetadata = () => {
@@ -54,19 +58,25 @@ export default function AIBodyMeasure() {
     }
   }
 
-  // 3. AI 预测循环
   async function predictWebcam() {
     if (!poseLandmarker || !videoRef.current || !canvasRef.current) return
 
-    let startTimeMs = performance.now()
-    const results = poseLandmarker.detectForVideo(videoRef.current, startTimeMs)
-
+    const video = videoRef.current
     const canvas = canvasRef.current
     const ctx = canvas.getContext('2d')
-    const video = videoRef.current
+
+    // --- 修复坐标的核心代码 ---
+    // 1. 让 Canvas 的分辨率严格等于视频的真实分辨率
+    if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+      canvas.width = video.videoWidth
+      canvas.height = video.videoHeight
+    }
     
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
+    // --- 结束修复 ---
+
+    let startTimeMs = performance.now()
+    const results = poseLandmarker.detectForVideo(video, startTimeMs)
+
     ctx.clearRect(0, 0, canvas.width, canvas.height)
 
     if (results.landmarks && results.landmarks.length > 0) {
@@ -77,25 +87,23 @@ export default function AIBodyMeasure() {
       // 画点
       ctx.fillStyle = "#00FF00"
       ctx.beginPath()
-      ctx.arc(leftShoulder.x * canvas.width, leftShoulder.y * canvas.height, 8, 0, 2 * Math.PI)
-      ctx.arc(rightShoulder.x * canvas.width, rightShoulder.y * canvas.height, 8, 0, 2 * Math.PI)
+      ctx.arc(leftShoulder.x * canvas.width, leftShoulder.y * canvas.height, 10, 0, 2 * Math.PI)
+      ctx.arc(rightShoulder.x * canvas.width, rightShoulder.y * canvas.height, 10, 0, 2 * Math.PI)
       ctx.fill()
 
-      // --- 核心算法：简单的比例计算 ---
-      // 假设：如果你能在画面里看到全身，那像素高度 = 真实身高。
-      // 但为了 FYP 简单演示，我们使用一个经验公式：
-      // 在标准站姿下，肩宽大约是 3D 坐标距离的一个比例。
-      // 这里我们使用 MediaPipe 的 Z 轴深度来做一个粗略估算。
-      
+      // 画线连接两个肩膀
+      ctx.strokeStyle = "#00FF00"
+      ctx.lineWidth = 4
+      ctx.beginPath()
+      ctx.moveTo(leftShoulder.x * canvas.width, leftShoulder.y * canvas.height)
+      ctx.lineTo(rightShoulder.x * canvas.width, rightShoulder.y * canvas.height)
+      ctx.stroke()
+
       const dx = leftShoulder.x - rightShoulder.x
       const dy = leftShoulder.y - rightShoulder.y
       const pixelDistance = Math.sqrt(dx * dx + dy * dy)
       
-      // 这是一个简单的估算公式 (FYP 只要能动就行，不需要精准到毫米)
-      // 逻辑：基于用户输入的身高，乘以一个人体工学系数，再结合 AI 看到的宽度微调
-      const estimatedWidth = (parseInt(userHeight) * 0.23) + (pixelDistance * 10) 
-      
-      // 平滑处理，取整数
+      const estimatedWidth = (parseInt(userHeight) * 0.23) + (pixelDistance * 5) // 系数微调
       setShoulderWidthCm(Math.round(estimatedWidth))
     }
 
@@ -104,23 +112,15 @@ export default function AIBodyMeasure() {
     }
   }
 
-  // 4. 保存到数据库
   const saveProfile = async () => {
     setIsSaving(true)
-    
-    // 获取当前登录用户
     const { data: { user } } = await supabase.auth.getUser()
-    
     if (!user) {
       alert("You are not logged in! (请先登录)")
       setIsSaving(false)
       return
     }
-
-    // 计算推荐尺码
     const size = shoulderWidthCm > 45 ? 'L' : (shoulderWidthCm > 40 ? 'M' : 'S')
-
-    // 更新 profiles 表
     const { error } = await supabase
       .from('profiles')
       .upsert({
@@ -130,20 +130,14 @@ export default function AIBodyMeasure() {
         top_size_recommendation: size,
         updated_at: new Date()
       })
-
-    if (error) {
-      console.error(error)
-      alert("Save failed!")
-    } else {
-      alert(`Saved! Your recommended size is ${size}`)
-    }
+    if (error) { console.error(error); alert("Save failed!"); } 
+    else { alert(`Saved! Recommended: ${size}`); }
     setIsSaving(false)
   }
 
   return (
     <div className="flex flex-col items-center gap-6 w-full max-w-lg mx-auto">
       
-      {/* 步骤 1: 输入身高 */}
       {!cameraActive && (
         <div className="bg-white p-6 rounded-xl shadow w-full">
           <label className="block text-sm font-bold mb-2">Step 1: Enter Height (cm)</label>
@@ -164,25 +158,36 @@ export default function AIBodyMeasure() {
         </div>
       )}
 
-      {/* 步骤 2: 摄像头画面 */}
-      <div className={`relative w-full aspect-video bg-black rounded-xl overflow-hidden ${!cameraActive ? 'hidden' : ''}`}>
-        <video ref={videoRef} playsInline muted className="w-full h-full object-cover"></video>
-        <canvas ref={canvasRef} className="absolute top-0 left-0 w-full h-full"></canvas>
+      {/* 修复 CSS: 
+         1. 移除 aspect-video，让高度自动适应 (h-auto)
+         2. 使用 transform: scaleX(-1) 实现镜像效果，这样你在屏幕上看到的就像照镜子一样
+      */}
+      <div className={`relative w-full bg-black rounded-xl overflow-hidden ${!cameraActive ? 'hidden' : ''}`}>
+        
+        {/* 视频层：镜像翻转 */}
+        <video 
+          ref={videoRef} 
+          playsInline 
+          muted 
+          className="w-full h-auto"
+          style={{ transform: 'scaleX(-1)' }} 
+        ></video>
+        
+        {/* 画布层：必须和视频层一样镜像翻转，否则点是对称反着的 */}
+        <canvas 
+          ref={canvasRef} 
+          className="absolute top-0 left-0 w-full h-full"
+          style={{ transform: 'scaleX(-1)' }}
+        ></canvas>
+
       </div>
 
-      {/* 步骤 3: 结果展示 */}
       {cameraActive && (
         <div className="bg-white p-6 rounded-xl shadow w-full text-center">
-          <p className="text-gray-500 text-sm">Real-time Measurement</p>
           <h2 className="text-4xl font-black text-blue-600 my-2">{shoulderWidthCm} cm</h2>
           <p className="mb-4">Estimated Shoulder Width</p>
-          
-          <button 
-            onClick={saveProfile} 
-            disabled={isSaving}
-            className="w-full bg-green-600 text-white py-3 rounded-lg font-bold hover:bg-green-700"
-          >
-            {isSaving ? "Saving..." : "💾 Save to My Profile"}
+          <button onClick={saveProfile} disabled={isSaving} className="w-full bg-green-600 text-white py-3 rounded-lg font-bold">
+            {isSaving ? "Saving..." : "💾 Save"}
           </button>
         </div>
       )}
