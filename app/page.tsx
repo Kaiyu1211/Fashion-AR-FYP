@@ -4,6 +4,7 @@ import { createClient } from '@/utils/supabase/client'
 import { useEffect, useState } from 'react'
 // 动态引入 AR 组件，防止 Next.js 服务端渲染报错
 import dynamic from 'next/dynamic'
+import Link from 'next/link'
 
 // 这一步很重要：告诉 Next.js 这个组件只能在浏览器加载
 const ARViewer = dynamic(() => import('@/components/ARViewer'), { 
@@ -29,6 +30,16 @@ export default function Home() {
   return (
     <main className="min-h-screen p-10 bg-gray-50 relative">
       <h1 className="text-4xl font-bold mb-8 text-center">Fashion AR Store</h1>
+
+{/* 新增的导航栏 */}
+<div className="flex justify-center gap-4 mb-8">
+  <Link href="/login" className="px-4 py-2 bg-gray-200 rounded-full text-sm font-bold hover:bg-gray-300">
+    👤 Login
+  </Link>
+  <Link href="/measure" className="px-4 py-2 bg-blue-100 text-blue-800 rounded-full text-sm font-bold hover:bg-blue-200">
+    📏 AI Measure
+  </Link>
+</div>
       
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {products.map((product) => (
